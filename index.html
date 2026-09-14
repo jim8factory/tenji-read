@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="inCam">内側カメラ</button>
+<button id="outCam">外側カメラ</button>
+<button id="readBtn" style="margin-left:10px;">読み込む</button>
+
+<div style="position:relative; display:inline-block;">
+  <video id="cam" autoplay playsinline style="width:300px;"></video>
+
+  <!-- 6点ガイド -->
+  <div id="guide" style="position:absolute; left:0; top:0; pointer-events:none;">
+    <div style="position:absolute; left:70px; top:50px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:70px; top:140px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:70px; top:230px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+
+    <div style="position:absolute; left:210px; top:50px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:210px; top:140px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:210px; top:230px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+  </div>
+</div>
+
+<canvas id="cv" width="300" height="300"></canvas>
+<div id="out" style="font-size:24px; margin-top:10px;"></div>
+
+<!-- ★ ポップアップ -->
+<div id="popup"
+     style="
+       position:fixed;
+       top:50%;
+       left:50%;
+       transform:translate(-50%, -50%);
+       background:#000;
+       color:#fff;
+       padding:20px 30px;
+       border-radius:10px;
+       font-size:32px;
+       display:none;
+       z-index:99999;">
+</div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+
+// ★ ポップアップ表示（必ず出る）
+function showPopup(msg){
+  const p = document.getElementById("popup");
+  p.textContent = msg;
+  p.style.display = "block";
+  setTimeout(()=>{ p.style.display = "none"; }, 1500);
+}
+
+// カメラ切替
+let currentStream = null;
+
+async function startCamera(deviceId){
+  if(currentStream){
+    currentStream.getTracks().forEach(t=>t.stop());
+  }
+  let stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId } : true
+  });
+  currentStream = stream;
+  cam.srcObject = stream;
+}
+
+async function getInnerCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/front|内蔵|integrated/i.test(d.label)) || cams[0];
+}
+
+async function getOuterCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/usb|webcam|camera/i.test(d.label)) || cams[cams.length-1];
+}
+
+inCam.onclick = async ()=>{
+  let camDev = await getInnerCam();
+  startCamera(camDev.deviceId);
+};
+
+outCam.onclick = async ()=>{
+  let camDev = await getOuterCam();
+  startCamera(camDev.deviceId);
+};
+
+// ガイド位置取得
+function getGuideCircles(){
+  return [...document.querySelectorAll("#guide div")].map(d=>{
+    const rect = d.getBoundingClientRect();
+    const base = cam.getBoundingClientRect();
+    const cx = rect.left - base.left + rect.width/2;
+    const cy = rect.top  - base.top  + rect.height/2;
+    const r  = rect.width/2;
+    return {cx, cy, r};
+  });
+}
+
+// 点字デコード
+function decodeBraille(bits){
+  const map = {
+    "101010":["o","こ"],
+    "101000":["k","か"],
+    "100000":["a","あ"],
+    "110000":["b","い"],
+    "100100":["c","う"],
+    "100110":["d","え"],
+    "100010":["e","お"]
+  };
+  return map[bits] ? map[bits].join(" / ") : "";
+}
+
+// 点字認識（矩形判定）
+function process(){
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(cam,0,0,300,300);
+
+  let src = cv.imread(cv);
+  cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
+  cv.adaptiveThreshold(src, src, 255,
+    cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+    cv.THRESH_BINARY_INV,
+    7, 3
+  );
+
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let pts = [];
+  for(let i=0;i<contours.size();i++){
+    let cnt = contours.get(i);
+    let r = cv.boundingRect(cnt);
+    let area = cv.contourArea(cnt);
+    let rectArea = r.width * r.height;
+    let ratio = area / rectArea;
+
+    if(r.width>8 && r.width<28 && r.height>8 && r.height<28 && ratio>0.55){
+      pts.push([r.x+r.width/2, r.y+r.height/2]);
+    }
+  }
+
+  let circles = getGuideCircles();
+  let bits = ["0","0","0","0","0","0"];
+
+  pts.forEach(p=>{
+    circles.forEach((c, idx)=>{
+      let left   = c.cx - c.r;
+      let right  = c.cx + c.r;
+      let top    = c.cy - c.r;
+      let bottom = c.cy + c.r;
+
+      if(p[0] >= left && p[0] <= right &&
+         p[1] >= top  && p[1] <= bottom){
+        bits[idx] = "1";
+      }
+    });
+  });
+
+  out.textContent = bits.join("");
+
+  src.delete(); contours.delete(); hierarchy.delete();
+}
+
+// ★ 読み込む（必ずポップアップ）
+readBtn.onclick = ()=>{
+  process();
+
+  const bits = out.textContent.trim();
+  const text = decodeBraille(bits);
+
+  // ★ 認識できた／できないに関係なくポップアップ
+  showPopup(text || "認識できません");
+};
+
+</script>
+</body>
+</html>
