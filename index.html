@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="inCam">内側カメラ</button>
+<button id="outCam">外側カメラ</button>
+<button id="toggleInfo" style="margin-left:10px;">説明を閉じる</button>
+
+<div style="position:relative; display:inline-block;">
+  <video id="cam" autoplay playsinline style="width:300px;"></video>
+
+  <!-- ★ 6点ガイド（赤丸） -->
+  <div id="guide" style="position:absolute; left:0; top:0; pointer-events:none;">
+    <div style="position:absolute; left:70px; top:50px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:70px; top:140px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:70px; top:230px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+
+    <div style="position:absolute; left:210px; top:50px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:210px; top:140px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+    <div style="position:absolute; left:210px; top:230px; width:20px; height:20px; border:2px solid red; border-radius:50%;"></div>
+  </div>
+</div>
+
+<canvas id="cv" width="300" height="300"></canvas>
+<div id="out" style="font-size:24px; margin-top:10px;"></div>
+
+<!-- ★ 説明ボックス -->
+<div id="infoBox" 
+     style="
+       position:fixed;
+       top:10px;
+       right:10px;
+       background:#0008;
+       color:white;
+       padding:10px 14px;
+       border-radius:8px;
+       font-size:14px;
+       line-height:1.4;
+       z-index:9999;
+     ">
+  ● 赤丸に点字の6点を合わせてください<br>
+  ● 合うと bits が 1/0 で表示されます<br>
+  ● 認識した文字は音声で読み上げます
+</div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+
+// ★ 説明ボックス開閉
+toggleInfo.onclick = ()=>{
+  const box = document.getElementById("infoBox");
+  if(box.style.display === "none"){
+    box.style.display = "block";
+    toggleInfo.textContent = "説明を閉じる";
+  }else{
+    box.style.display = "none";
+    toggleInfo.textContent = "説明を開く";
+  }
+};
+
+// ★ カメラ切替
+let currentStream = null;
+
+async function startCamera(deviceId){
+  if(currentStream){
+    currentStream.getTracks().forEach(t=>t.stop());
+  }
+  let stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId } : true
+  });
+  currentStream = stream;
+  cam.srcObject = stream;
+}
+
+async function getInnerCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/front|内蔵|integrated/i.test(d.label)) || cams[0];
+}
+
+async function getOuterCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/usb|webcam|camera/i.test(d.label)) || cams[cams.length-1];
+}
+
+inCam.onclick = async ()=>{
+  let camDev = await getInnerCam();
+  startCamera(camDev.deviceId);
+};
+
+outCam.onclick = async ()=>{
+  let camDev = await getOuterCam();
+  startCamera(camDev.deviceId);
+};
+
+// ★ 読み上げ
+function speak(t){
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+}
+
+// ★ 衝突吸収デコーダー
+function decodeBraille(bits){
+
+  if(bits === "111000"){
+    return "l / き / その他";
+  }
+
+  const map = {
+    "100000":["a","あ"],
+    "110000":["b","い"],
+    "100100":["c","う"],
+    "100110":["d","え"],
+    "100010":["e","お"],
+    "101000":["k","か"],
+    "101100":["m","く"],
+    "101110":["n","け"],
+    "101010":["o","こ"],
+    "110100":["f","さ"],
+    "110110":["g","し"],
+    "110010":["h","す"],
+    "010100":["i","せ"],
+    "010110":["j","そ"],
+    "101001":["u","た"],
+    "111001":["v","ち"],
+    "101101":["x","つ"],
+    "101111":["y","て"],
+    "101011":["z","と"],
+    "011100":["s","な"],
+    "011110":["t","に"],
+    "111100":["p","は"],
+    "111110":["q","ひ"],
+    "111010":["r","ふ"],
+
+    "001000":["、"],
+    "001100":["。"],
+    "001010":["・","ろ"],
+    "001110":["？"],
+    "001011":["！","る"],
+    "001001":["「","ら"],
+    "001101":["」","り"],
+    "001111":["れ"],
+
+    "011010":["ぬ"],
+    "011011":["ね"],
+    "011001":["の"],
+    "011000":["へ"],
+    "011111":["ほ"],
+    "100001":["ま"],
+    "110001":["み"],
+    "100101":["む"],
+    "100111":["め"],
+    "100011":["も"],
+    "010001":["や"],
+    "010101":["ゆ"],
+    "010111":["よ"],
+    "000001":["わ"],
+    "000101":["を"],
+    "000011":["ん"]
+  };
+
+  return map[bits] ? map[bits].join(" / ") : "";
+}
+
+// ★ 認識処理
+function process(){
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(cam,0,0,300,300);
+
+  let src = cv.imread(cv);
+  cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
+  cv.threshold(src, src, 120, 255, cv.THRESH_BINARY_INV);
+
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let pts = [];
+  for(let i=0;i<contours.size();i++){
+    let r = cv.boundingRect(contours.get(i));
+    if(r.width<20 && r.height<20){
+      pts.push([r.x+r.width/2, r.y+r.height/2]);
+    }
+  }
+
+  const centers = [
+    [80,60],[80,150],[80,240],
+    [220,60],[220,150],[220,240]
+  ];
+
+  let bits = ["0","0","0","0","0","0"];
+
+  pts.forEach(p=>{
+    let best=-1, min=99999;
+    centers.forEach((c,idx)=>{
+      let dx=p[0]-c[0], dy=p[1]-c[1];
+      let d=dx*dx+dy*dy;
+      if(d<min){min=d; best=idx;}
+    });
+    if(best>=0) bits[best]="1";
+  });
+
+  out.textContent = bits.join("");
+
+  let text = decodeBraille(bits.join(""));
+  if(text) speak(text);
+
+  src.delete(); contours.delete(); hierarchy.delete();
+  requestAnimationFrame(process);
+}
+
+setTimeout(()=>process(),1000);
+
+</script>
+</body>
+</html>
