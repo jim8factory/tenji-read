@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="inCam">内側カメラ</button>
+<button id="outCam">外側カメラ</button>
+
+<video id="cam" autoplay playsinline style="width:300px;"></video>
+<canvas id="cv" width="300" height="300"></canvas>
+<div id="out" style="font-size:24px; margin-top:10px;"></div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+
+// ★ カメラ切替
+let currentStream = null;
+
+async function startCamera(deviceId){
+  if(currentStream){
+    currentStream.getTracks().forEach(t=>t.stop());
+  }
+  let stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId } : true
+  });
+  currentStream = stream;
+  cam.srcObject = stream;
+}
+
+async function getInnerCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/front|内蔵|integrated/i.test(d.label)) || cams[0];
+}
+
+async function getOuterCam(){
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  return cams.find(d=>/usb|webcam|camera/i.test(d.label)) || cams[cams.length-1];
+}
+
+inCam.onclick = async ()=>{
+  let camDev = await getInnerCam();
+  startCamera(camDev.deviceId);
+};
+
+outCam.onclick = async ()=>{
+  let camDev = await getOuterCam();
+  startCamera(camDev.deviceId);
+};
+
+// ★ 読み上げ
+function speak(t){
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+}
+
+// ★ 点字デコード
+function decodeBraille(bits){
+
+  if(bits === "111000"){
+    return "l / き / その他の点字";
+  }
+
+  const map = {
+    "100000":"a","110000":"b","100100":"c","100110":"d","100010":"e",
+    "110100":"f","110110":"g","110010":"h","010100":"i","010110":"j",
+    "101000":"k","101100":"m","101110":"n","101010":"o",
+    "111100":"p","111110":"q","111010":"r","011100":"s","011110":"t",
+    "101001":"u","111001":"v","010111":"w","101101":"x","101111":"y",
+    "101011":"z",
+
+    "010110":"1","100000":"2","110000":"3","100100":"4","100110":"5",
+    "100010":"6","110100":"7","110110":"8","110010":"9","010100":"0",
+
+    "001000":"、","001100":"。","001010":"・","001110":"？",
+    "001011":"！","001001":"「","001101":"」",
+
+    "100000":"あ","110000":"い","100100":"う","100110":"え","100010":"お",
+    "101000":"か","101100":"く","101110":"け","101010":"こ",
+    "110100":"さ","110110":"し","110010":"す","010100":"せ","010110":"そ",
+    "101001":"た","111001":"ち","101101":"つ","101111":"て","101011":"と",
+    "011100":"な","011110":"に","011010":"ぬ","011011":"ね","011001":"の",
+    "111100":"は","111110":"ひ","111010":"ふ","011000":"へ","011111":"ほ",
+    "100001":"ま","110001":"み","100101":"む","100111":"め","100011":"も",
+    "010001":"や","010101":"ゆ","010111":"よ",
+    "001001":"ら","001101":"り","001011":"る","001111":"れ","001010":"ろ",
+    "000001":"わ","000101":"を","000011":"ん"
+  };
+
+  return map[bits] || "";
+}
+
+// ★ 認識処理（ガイド＋説明＋認識表示）
+function process(){
+  const ctx = cv.getContext("2d");
+
+  // ★ video → canvas
+  ctx.drawImage(cam,0,0,300,300);
+
+  // ★ OpenCV は video から直接読む
+  let frame = cv.imread(cam);
+  let src = new cv.Mat();
+  cv.cvtColor(frame, src, cv.COLOR_RGBA2GRAY);
+  cv.threshold(src, src, 120, 255, cv.THRESH_BINARY_INV);
+
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let pts = [];
+  for(let i=0;i<contours.size();i++){
+    let r = cv.boundingRect(contours.get(i));
+    if(r.width<20 && r.height<20){
+      pts.push([r.x+r.width/2, r.y+r.height/2]);
+    }
+  }
+
+  const centers = [
+    [80,60],[80,150],[80,240],
+    [220,60],[220,150],[220,240]
+  ];
+
+  let bits = ["0","0","0","0","0","0"];
+
+  pts.forEach(p=>{
+    let best=-1, min=99999;
+    centers.forEach((c,idx)=>{
+      let dx=p[0]-c[0], dy=p[1]-c[1];
+      let d=dx*dx+dy*dy;
+      if(d<min){min=d; best=idx;}
+    });
+    if(best>=0) bits[best]="1";
+  });
+
+  // ★ ガイド＋説明表示
+  centers.forEach((c, idx)=>{
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], 18, 0, Math.PI*2);
+    ctx.strokeStyle = bits[idx] === "1" ? "lime" : "red";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // 説明（1点〜6点）
+    ctx.fillStyle = "yellow";
+    ctx.font = "16px sans-serif";
+    ctx.fillText((idx+1)+"点", c[0]-10, c[1]-25);
+  });
+
+  // ★ 認識結果表示
+  let text = decodeBraille(bits.join(""));
+  if(text){
+    out.textContent = bits.join("") + " → " + text;
+    speak(text);
+  }
+
+  frame.delete();
+  src.delete();
+  contours.delete();
+  hierarchy.delete();
+
+  requestAnimationFrame(process);
+}
+
+setTimeout(()=>process(),1000);
+
+</script>
+</body>
+</html>
