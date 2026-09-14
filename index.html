@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<body>
+<video id="cam" autoplay playsinline style="width:300px;"></video>
+<canvas id="cv" width="300" height="300" style="display:none;"></canvas>
+<div id="out" style="font-size:24px;"></div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+
+// ★ 外カメラを優先して取得する
+async function startCamera(){
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  let cams = devices.filter(d=>d.kind==="videoinput");
+
+  // USB / 外付けっぽい名前を優先
+  let ext = cams.find(d=>/usb|webcam|camera/i.test(d.label)) || cams[0];
+
+  let stream = await navigator.mediaDevices.getUserMedia({
+    video: { deviceId: ext.deviceId }
+  });
+
+  cam.srcObject = stream;
+}
+
+startCamera();
+
+// ---- 以下あなたの元コード ----
+
+function speak(t){
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+}
+
+function decodeBraille(bits){
+  const map = {
+    "100000":"a","110000":"b","100100":"c","100110":"d","100010":"e",
+    "110100":"f","110110":"g","110010":"h","010100":"i","010110":"j"
+  };
+  return map[bits] || "";
+}
+
+function process(){
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(cam,0,0,300,300);
+  let src = cv.imread(cv);
+  cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
+  cv.threshold(src, src, 120, 255, cv.THRESH_BINARY_INV);
+
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let pts = [];
+  for(let i=0;i<contours.size();i++){
+    let r = cv.boundingRect(contours.get(i));
+    if(r.width<20 && r.height<20) pts.push([r.x,r.y]);
+  }
+
+  let bits = ["0","0","0","0","0","0"];
+  pts.forEach(p=>{
+    let x=p[0], y=p[1];
+    let col = x<150 ? 0 : 1;
+    let row = y<100 ? 0 : (y<200 ? 1 : 2);
+    let idx = row + col*3;
+    bits[idx] = "1";
+  });
+
+  let text = decodeBraille(bits.join(""));
+  out.textContent = text;
+  if(text) speak(text);
+
+  src.delete(); contours.delete(); hierarchy.delete();
+  requestAnimationFrame(process);
+}
+
+setTimeout(()=>process(),1000);
+</script>
+</body>
+</html>
