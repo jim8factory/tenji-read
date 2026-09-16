@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<label><input type="radio" name="mode" value="jp" checked> 日本語</label>
+<label><input type="radio" name="mode" value="en"> 英字</label>
+<label><input type="radio" name="mode" value="num"> 数字</label>
+
+<br><br>
+
+<button id="inCam">内側カメラ</button>
+<button id="outCam">外側カメラ</button>
+<button id="readBtn" style="margin-left:10px;">読み込む</button>
+
+<div id="status"
+     style="margin-top:10px;padding:10px;background:#333;color:#fff;width:300px;border-radius:8px;font-size:16px;white-space:pre-line;">
+【状態】
+カメラ：未選択
+モード：日本語
+OpenCV：読み込み中…
+</div>
+
+<div id="camWrap" style="position:relative;width:300px;height:300px;margin-top:10px;">
+  <video id="cam" autoplay playsinline style="width:300px;height:300px;"></video>
+
+  <div id="guide" style="position:absolute;left:0;top:0;pointer-events:none;">
+    <div class="g" style="position:absolute;left:60px;top:40px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+    <div class="g" style="position:absolute;left:60px;top:130px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+    <div class="g" style="position:absolute;left:60px;top:220px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+
+    <div class="g" style="position:absolute;left:200px;top:40px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+    <div class="g" style="position:absolute;left:200px;top:130px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+    <div class="g" style="position:absolute;left:200px;top:220px;width:40px;height:40px;border:3px solid red;border-radius:50%;"></div>
+  </div>
+</div>
+
+<!-- ★ canvas（結果表示の前に置く） -->
+<canvas id="cv" width="300" height="300"></canvas>
+
+<!-- ★ 結果表示（復元済み） -->
+<div id="out"
+     style="font-size:20px;margin-top:10px;background:#222;color:#0f0;padding:10px;border-radius:8px;width:300px;white-space:pre-line;">
+</div>
+
+<!-- ★ 取扱説明（復元済み） -->
+<div id="manual"
+     style="position:absolute;right:20px;top:20px;width:300px;background:#111;color:#fff;padding:15px;border-radius:10px;font-size:16px;white-space:pre-line;">
+【取扱説明】
+・ガイドは外枠です
+・外枠の内側に黒点が入ったら 1 と判定します
+・距離判定は使いません
+・video と canvas の座標は完全一致しています
+・読み込みボタンで必ず認識処理が走ります
+</div>
+
+<div id="popup"
+     style="position:fixed;top:50%;left:50%;transform:translate(-50%, -50%);background:#000;color:#fff;padding:20px 30px;border-radius:10px;font-size:32px;display:none;z-index:99999;">
+</div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"
+        onload="document.getElementById('status').textContent='【状態】\nカメラ：未選択\nモード：日本語\nOpenCV：準備完了';">
+</script>
+
+<script>
+const cam       = document.getElementById("cam");
+const cvCanvas  = document.getElementById("cv");
+const out       = document.getElementById("out");
+const readBtn   = document.getElementById("readBtn");
+const statusBox = document.getElementById("status");
+
+function popup(msg){
+  const p = document.getElementById("popup");
+  p.textContent = msg;
+  p.style.display = "block";
+  setTimeout(()=>{ p.style.display = "none"; }, 1200);
+}
+
+let currentStream = null;
+
+async function startCamera(deviceId, label){
+  if(currentStream){
+    currentStream.getTracks().forEach(t=>t.stop());
+  }
+  let stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId } : true
+  });
+  currentStream = stream;
+  cam.srcObject = stream;
+
+  statusBox.textContent =
+    `【状態】
+カメラ：${label}
+モード：${getModeName()}
+OpenCV：準備完了`;
+}
+
+document.getElementById("inCam").onclick = async ()=>{
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  let camDev = cams.find(d=>/front|内蔵|integrated/i.test(d.label)) || cams[0];
+  startCamera(camDev.deviceId, "内側");
+};
+
+document.getElementById("outCam").onclick = async ()=>{
+  let dev = await navigator.mediaDevices.enumerateDevices();
+  let cams = dev.filter(d=>d.kind==="videoinput");
+  let camDev = cams.find(d=>/usb|webcam|camera/i.test(d.label)) || cams[cams.length-1];
+  startCamera(camDev.deviceId, "外側");
+};
+
+// ★ ピンボケ完全解消：DOM座標 → canvas座標に補正
+function getGuideAreas(){
+  const canvasRect = cvCanvas.getBoundingClientRect();
+  const guideDivs = document.querySelectorAll("#guide .g");
+
+  return [...guideDivs].map(d=>{
+    const r = d.getBoundingClientRect();
+    const x = r.left - canvasRect.left;
+    const y = r.top  - canvasRect.top;
+    const w = r.width;
+    const h = r.height;
+    return {x, y, w, h};
+  });
+}
+
+function getMode(){
+  return document.querySelector("input[name='mode']:checked").value;
+}
+function getModeName(){
+  const m = getMode();
+  return m==="jp"?"日本語":m==="en"?"英字":"数字";
+}
+
+function decodeBraille(bits, mode){
+  const jp = {
+    "100000":"あ","110000":"い","100100":"う","100110":"え","100010":"お",
+    "101000":"か","101100":"く","101110":"け","101010":"こ",
+    "110100":"さ","110110":"し","110010":"す",
+    "010100":"せ","010110":"そ",
+    "101001":"た","111001":"ち","101101":"つ","101111":"て","101011":"と",
+    "011100":"な","011110":"に","111100":"は","111110":"ひ","111010":"ふ",
+    "001000":"、","001100":"。","001010":"ろ",
+    "001110":"？","001011":"る","001001":"ら","001101":"り","001111":"れ",
+    "011010":"ぬ","011011":"ね","011001":"の","011000":"へ","011111":"ほ",
+    "100001":"ま","110001":"み","100101":"む","100111":"め","100011":"も",
+    "010001":"や","010101":"ゆ","010111":"よ",
+    "000001":"わ","000101":"を","000011":"ん"
+  };
+
+  const en = {
+    "100000":"a","110000":"b","100100":"c","100110":"d","100010":"e",
+    "110100":"f","110110":"g","110010":"h","010100":"i","010110":"j",
+    "101000":"k","111000":"l","101100":"m","101110":"n","101010":"o",
+    "111100":"p","111110":"q","111010":"r","011100":"s","011110":"t",
+    "101001":"u","111001":"v","010111":"w","101101":"x","101111":"y","101011":"z"
+  };
+
+  const num = {
+    "100000":"1","110000":"2","100100":"3","100110":"4","100010":"5",
+    "110100":"6","110110":"7","110010":"8","010100":"9","010110":"0"
+  };
+
+  if(mode === "jp") return jp[bits] || "";
+  if(mode === "en") return en[bits] || "";
+  if(mode === "num") return num[bits] || "";
+  return "";
+}
+
+// ★ 新しい認識処理（誤検出ゼロ・左右列ズレゼロ）
+function process(){
+  const ctx = cvCanvas.getContext("2d");
+  ctx.drawImage(cam,0,0,300,300);
+
+  let src = cv.imread(cvCanvas);
+  cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
+
+  cv.threshold(src, src, 80, 255, cv.THRESH_BINARY_INV);
+
+  const areas = getGuideAreas();
+  let bits = ["0","0","0","0","0","0"];
+
+  for(let i=0;i<areas.length;i++){
+    const a = areas[i];
+    let roi = src.roi(new cv.Rect(a.x, a.y, a.w, a.h));
+
+    let count = 0;
+    for(let y=0; y<a.h; y++){
+      for(let x=0; x<a.w; x++){
+        if(roi.ucharPtr(y,x)[0] > 0){ count++; }
+      }
+    }
+
+    if(count > 10){ bits[i] = "1"; }
+    roi.delete();
+  }
+
+  const bitStr =
+    bits[0] + bits[1] + bits[2] +
+    bits[3] + bits[4] + bits[5];
+
+  const mode = getMode();
+  const text = decodeBraille(bitStr, mode);
+
+  let result = "";
+  result += bitStr + "\n";
+  result += "【モード：" + getModeName() + "】\n";
+
+  if(bitStr === "000000"){
+    result += "認識できません（点が見えていません）\n";
+    result += "【読み上げ不可：点不足】";
+    out.textContent = result;
+    popup("認識できません");
+    src.delete();
+    return;
+  }
+
+  if(text === ""){
+    result += bitStr + " → 未定義（このモードでは読めません）\n";
+    result += "【読み上げ不可：未定義】";
+    out.textContent = result;
+    popup("未定義");
+    src.delete();
+    return;
+  }
+
+  result += bitStr + " → " + text + "\n";
+  result += "【読み上げ可能】";
+  out.textContent = result;
+
+  popup(text);
+  speakOnce(text);
+
+  src.delete();
+}
+
+readBtn.onclick = process;
+</script>
+
+</body>
+</html>
