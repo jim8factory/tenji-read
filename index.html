@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>点字読み取り（読み上げ付き）</title>
+<style>
+body { font-size:24px; white-space:pre; }
+video { width:100%; }
+#out { margin-top:10px; }
+</style>
+</head>
+<body>
+
+<video id="cam" autoplay playsinline></video>
+<canvas id="cv" style="display:none;"></canvas>
+<div id="out"></div>
+
+<script>
+// ★ 背面カメラ
+navigator.mediaDevices.getUserMedia({
+  video:{ facingMode:{ exact:"environment" } }
+}).then(s=>cam.srcObject=s)
+.catch(()=>{
+  navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:"environment" }
+  }).then(s=>cam.srcObject=s);
+});
+
+// ●○表示
+function drawBitsArray(arr){
+  let t="";
+  for(const bits of arr){
+    const c=i=>bits[i]==="1"?"●":"○";
+    t+=c(0)+" "+c(3)+"\n"+
+       c(1)+" "+c(4)+"\n"+
+       c(2)+" "+c(5)+"\n\n";
+  }
+  out.textContent=t;
+}
+
+// ★ あなたの detectCenters をここに入れる
+function detectCenters(){
+  return [
+    {dx:0,dy:0},{dx:0,dy:0},{dx:0,dy:0},
+    {dx:0,dy:0},{dx:0,dy:0},{dx:0,dy:0}
+  ];
+}
+
+// ±25px → bits
+function decideBits(centers){
+  const th=25;
+  let bits="";
+  for(let i=0;i<6;i++){
+    const {dx,dy}=centers[i];
+    const on=Math.abs(dx)<=th && Math.abs(dy)<=th;
+    bits+=on?"1":"0";
+  }
+  return bits;
+}
+
+// 仮辞書
+const dict={
+  "011000":"き","100001":"ゃ","001011":"ー",
+  "011000 100001":"きゃ",
+  "011000 100001 001011":"きゃー"
+};
+
+// 複合処理（前置点・拗音・促音・長音）
+function resolve(a){
+  let o=[];
+  for(let i=0;i<a.length;i++){
+    const b=a[i];
+    if(b==="000001"||b==="000010"||b==="001111"||b==="000011"){
+      const n=a[i+1]; if(!n){o.push("□");continue;}
+      o.push(b+" "+n); i++; continue;
+    }
+    o.push(b);
+  }
+  return o;
+}
+function resolveYoon(a){
+  let o=[];
+  for(let i=0;i<a.length;i++){
+    const b=a[i],n=a[i+1];
+    if(n==="100001"||n==="101001"||n==="100101"){
+      o.push(b+" "+n); i++; continue;
+    }
+    o.push(b);
+  }
+  return o;
+}
+function resolveSokuon(a){
+  let o=[];
+  for(let i=0;i<a.length;i++){
+    const b=a[i];
+    if(b==="011001"){
+      const n=a[i+1]; if(!n){o.push("□");continue;}
+      o.push(b+" "+n); i++; continue;
+    }
+    o.push(b);
+  }
+  return o;
+}
+function resolveChoon(a){
+  let o=[];
+  for(let i=0;i<a.length;i++){
+    const b=a[i];
+    if(b==="001011"){
+      const p=o.pop(); if(!p){o.push("□");continue;}
+      o.push(p+" "+b); continue;
+    }
+    o.push(b);
+  }
+  return o;
+}
+function resolveAll(a){
+  return resolveChoon(resolveSokuon(resolveYoon(resolve(a))));
+}
+
+let prev="";
+
+// ★ 読み上げ
+function speak(arr){
+  const seq=resolveAll(arr);
+  const key=seq.join("");
+  if(key===prev) return;
+  prev=key;
+
+  const text=dict[key]||"□";
+  if(text==="□") return;
+
+  const uttr=new SpeechSynthesisUtterance(text);
+  speechSynthesis.speak(uttr);
+}
+
+// ★ 心臓（進むループ）
+function loop(){
+  const centers = detectCenters();
+  const bits = decideBits(centers);
+  const bitsArray = [bits];
+
+  drawBitsArray(bitsArray);
+  speak(bitsArray);
+}
+
+setInterval(loop, 500);
+</script>
+</body>
+</html>
